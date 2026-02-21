@@ -1,0 +1,16 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.env
+.env.*
+.venv/
+venv/
+.env
+# Model/artifacts
+src/models/
+*.index
+*.pkl
+# VS Code
+.vscode/
