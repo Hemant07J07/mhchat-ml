@@ -9,8 +9,7 @@ __pycache__/
 venv/
 .env
 # Model/artifacts
-src/models/
-*.index
-*.pkl
+# NOTE: We intentionally KEEP model artifacts in git (via Git LFS) so the repo
+# is self-contained. Do not add `src/models/` here.
 # VS Code
 .vscode/

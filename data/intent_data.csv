@@ -1,0 +1,32 @@
+text,label
+"Hello there!",casual_chat
+"What's the weather today?",casual_chat
+"Tell me a joke",casual_chat
+"How are you?",casual_chat
+"Do you know any relaxation tips?",mental_health_support
+"I'm feeling stressed about exams",mental_health_support
+"I can't sleep because I'm anxious",mental_health_support
+"I feel overwhelmed with work",mental_health_support
+"I feel worthless and down",mental_health_support
+"My anxiety keeps me awake",mental_health_support
+"I want to die",crisis
+"I have been thinking about killing myself",crisis
+"I'm going to hurt myself",crisis
+"I have a plan to end my life",crisis
+"I might harm myself",crisis
+"Life isn't worth living anymore",crisis
+"I'm OK",casual_chat
+"Thanks for listening",casual_chat
+"How do I do breathing exercises?",mental_health_support
+"Can you help me calm down?",mental_health_support
+"I feel like ending it all",crisis
+"I don't want to exist",crisis
+"That was funny",casual_chat
+"I feel a lot of panic",mental_health_support
+"I can't stop crying",mental_health_support
+"Are you real?",casual_chat
+"I wish I could just disappear",crisis
+"Is there a hotline I can call?",mental_health_support
+"How long will this sadness last?",mental_health_support
+"Please don't let me die",crisis
+"I need someone to talk to",mental_health_support
