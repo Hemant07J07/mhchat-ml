@@ -11,6 +11,7 @@ from transformers import (
 )
 import numpy as np
 import sklearn.metrics as skm
+from sklearn.utils.class_weight import compute_class_weight
 
 # Config - tuned for CPU / low RAM
 MODEL_NAME = "distilbert-base-uncased"
@@ -24,6 +25,11 @@ parser.add_argument(
     "--data-file",
     default="data/intent_data.csv",
     help="Path to CSV with columns: text,label",
+)
+parser.add_argument(
+    "--weighted",
+    action="store_true",
+    help="Use class-weighted loss (balanced) to improve minority-class recall",
 )
 args = parser.parse_args()
 
@@ -103,13 +109,34 @@ training_args = TrainingArguments(
     weight_decay=0.01,
 )
 
-trainer = Trainer(
+trainer_cls = Trainer
+trainer_kwargs = {}
+
+if args.weighted:
+    # Compute class weights from training labels only.
+    # If a label is missing from the train split, default its weight to 1.0.
+    y_labels = np.asarray(train_ds["labels"], dtype=np.int64)
+    present = np.unique(y_labels)
+    computed = compute_class_weight(class_weight="balanced", classes=present, y=y_labels)
+
+    weights_full = np.ones(len(labels), dtype=np.float32)
+    for c, w in zip(present, computed):
+        weights_full[int(c)] = float(w)
+
+    from src.ml.weighted_trainer import WeightedTrainer
+
+    trainer_cls = WeightedTrainer
+    trainer_kwargs["class_weights"] = weights_full.tolist()
+    print("Using weighted loss with class_weights:", trainer_kwargs["class_weights"])
+
+trainer = trainer_cls(
     model=model,
     args=training_args,
     train_dataset=train_ds,
     eval_dataset=eval_ds,
     data_collator=data_collator,
     compute_metrics=compute_metrics,
+    **trainer_kwargs,
 )
 
 print("Starting training (this will be CPU-bound and may take some minutes)...")
