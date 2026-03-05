@@ -1,10 +1,11 @@
 from transformers import Trainer
 import torch
+import numpy as np
 
 class WeightedTrainer(Trainer):
     def __init__(self, *args, class_weights=None, **kwargs):
         super().__init__(*args, **kwargs)
-        # class_weights: list or np,array with shape (num_labels,)
+        # class_weights: list or np.array with shape (num_labels,)
         if class_weights is None:
             self.class_weights = None
         else:
@@ -14,8 +15,6 @@ class WeightedTrainer(Trainer):
         labels = inputs.get("labels")
         outputs = model(**inputs)
         logits = outputs.get("logits")
-
-        weight = self.class_weights.to(logits.device) if self.class_weights is not None else None
-        loss_fct = torch.nn.CrossEntropyLoss(weight=weight)
-        loss = loss_fct(logits.view(-1, model.config.num_labels), labels.view(-1).long())
+        loss_fct = torch.nn.CrossEntropyLoss(weight=self.class_weights.to(logits.device) if self.class_weights is not None else None)
+        loss = loss_fct(logits.view(-1, model.config.num_labels), labels.view(-1))
         return (loss, outputs) if return_outputs else loss
