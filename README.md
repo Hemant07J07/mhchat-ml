@@ -7,6 +7,8 @@ Minimal ML + API package for a mental-health chat prototype:
 - **Safety keyword check** for crisis phrases.
 - **Tiny knowledge base (KB)** retrieval (FAISS / Annoy fallback) for non-crisis replies.
 - **FastAPI** endpoint `POST /predict` that returns intent + crisis flag + KB hits.
+- **RAG chat** endpoint `POST /chat` that can use Ollama, local docs, and web search.
+- **Streaming RAG** endpoint `POST /chat/stream` that emits JSONL events.
 
 ## Repo Layout
 
@@ -22,6 +24,8 @@ Minimal ML + API package for a mental-health chat prototype:
 	- `safety_checks.py`: keyword-based crisis detection
 	- `build_kb.py`: build a vector index for KB docs
 	- `retrieve_kb.py`: query the KB index
+	- `rag_answer.py`: Ollama-powered RAG answers (with streaming helper)
+	- `rag_retrieval.py`: local + web retrieval helpers
 	- `expand_dataset.py`: generate synthetic intent examples
 	- `oversample_intent.py`: oversample crisis class in the dataset
 - `src/models/`
@@ -39,6 +43,9 @@ python -m venv .venv
 \.\.venv\Scripts\Activate.ps1
 python -m pip install -U pip
 pip install -r requirements.txt
+
+# Optional: RAG + Ollama dependencies
+pip install -r requirements-rag.txt
 ```
 
 Optional: to avoid HF download warnings / rate limits, set an auth token:
@@ -141,6 +148,54 @@ python -m uvicorn src.api.main:app --reload --port 8001
 Open docs:
 
 - http://127.0.0.1:8001/docs
+
+## RAG configuration
+
+The RAG flow uses Ollama for embeddings and chat completions, plus optional web search
+and MCP tool integration. Configure via environment variables:
+
+```env
+# Ollama
+OLLAMA_URL=http://localhost:11434
+OLLAMA_CHAT_MODEL=llama3.2:1b
+OLLAMA_EMBED_MODEL=embeddinggemma
+OLLAMA_FALLBACK_CHAT_MODEL=gemma3
+MODEL_PROFILE=GEMMA4_2B
+
+# Retrieval
+RAG_DATA_DIR=data
+RETRIEVAL_BACKEND=json
+LOCAL_TOP_K=3
+WEB_TOP_K=2
+
+# MCP (optional)
+MCP_ENABLED=false
+MCP_SERVER_PATH=mcp_server.py
+```
+
+## RAG endpoints
+
+### `/chat`
+
+Returns a structured answer with sources.
+
+```powershell
+$body = @{ message = 'How do I handle panic attacks?' } | ConvertTo-Json
+Invoke-RestMethod -Method Post -Uri 'http://127.0.0.1:8001/chat' -ContentType 'application/json' -Body $body
+```
+
+### `/chat/stream`
+
+Streams JSONL events with tokens and a final payload. Each line is a JSON object:
+
+- `{ "type": "token", "value": "..." }`
+- `{ "type": "final", "data": { ... } }`
+
+```bash
+curl -N -X POST "http://127.0.0.1:8001/chat/stream" \
+	-H "Content-Type: application/json" \
+	-d "{\"message\":\"What are grounding exercises?\"}"
+```
 
 ### Test with PowerShell
 

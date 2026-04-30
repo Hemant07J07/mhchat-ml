@@ -1,0 +1,6 @@
+requests
+numpy
+duckduckgo-search
+mcp
+ddgs
+python-dotenv
