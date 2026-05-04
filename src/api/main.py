@@ -30,6 +30,7 @@ class PredictResponse(BaseModel):
 class ChatRequest(BaseModel):
     message: str
     context: Optional[List[dict]] = None
+    fallback_hint: Optional[str] = None
 
 
 class ChatResponse(BaseModel):
@@ -116,6 +117,7 @@ def predict(req: PredictRequest):
 @app.post("/chat", response_model=ChatResponse)
 def chat(req: ChatRequest):
     text = req.message or ""
+    fallback_hint = req.fallback_hint
 
     logger.info(f"Chat request: '{text[:50]}...'")
 
@@ -146,7 +148,7 @@ def chat(req: ChatRequest):
     if intent_label == "mental_health_support" and intent_score >= 0.5:
         kb_hits = kb_retrieve(text, k=3, threshold=1.0)
 
-    rag_result = rag_chat(text, kb_hits)
+    rag_result = rag_chat(text, kb_hits, fallback_hint)
     return ChatResponse(
         intent=intent_label,
         intent_score=round(intent_score, 3),
@@ -162,6 +164,7 @@ def chat(req: ChatRequest):
 @app.post("/chat/stream")
 def chat_stream(req: ChatRequest):
     text = req.message or ""
+    fallback_hint = req.fallback_hint
 
     logger.info(f"Chat stream request: '{text[:50]}...'")
 
@@ -197,7 +200,7 @@ def chat_stream(req: ChatRequest):
         kb_hits = kb_retrieve(text, k=3, threshold=1.0)
 
     def _stream():
-        for event in rag_chat_stream(text, kb_hits):
+        for event in rag_chat_stream(text, kb_hits, fallback_hint):
             yield json.dumps(event) + "\n"
 
     return StreamingResponse(_stream(), media_type="application/x-ndjson")

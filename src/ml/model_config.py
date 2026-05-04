@@ -5,6 +5,11 @@ from dotenv import load_dotenv
 load_dotenv()
 
 MODEL_PROFILES = {
+    "LLAMA3_1B": {
+        "chat": "llama3.2:1b",
+        "embed": "embeddinggemma",
+        "fallback": "llama3.2:1b",
+    },
     "GEMMA4_2B": {
         "chat": "gemma4:e2b",
         "embed": "embeddinggemma",
@@ -22,7 +27,7 @@ MODEL_PROFILES = {
     },
 }
 
-DEFAULT_MODEL_PROFILE = "GEMMA4_2B"
+DEFAULT_MODEL_PROFILE = "LLAMA3_1B"
 
 
 def _resolve_profile(name: str):

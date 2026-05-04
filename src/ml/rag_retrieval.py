@@ -21,6 +21,13 @@ MODEL_CONFIG = get_model_config()
 OLLAMA_URL = MODEL_CONFIG["ollama_url"]
 EMBED_MODEL = MODEL_CONFIG["embed_model"]
 
+try:
+    from sentence_transformers import SentenceTransformer
+
+    _ST_MODEL = SentenceTransformer("all-MiniLM-L6-v2")
+except Exception:
+    _ST_MODEL = None
+
 
 def cosine_similarity(a, b):
     a = np.array(a, dtype=np.float32)
@@ -33,58 +40,66 @@ def cosine_similarity(a, b):
 
 def embed_text(text: str):
     base_url = (OLLAMA_URL or "").rstrip("/")
-    if not base_url:
-        raise RuntimeError("OLLAMA_URL is empty")
-
     attempts = []
 
-    try:
-        r = requests.post(
-            f"{base_url}/api/embed",
-            json={"model": EMBED_MODEL, "input": text},
-            timeout=120,
-        )
-        if r.ok:
-            data = r.json()
-            if isinstance(data, dict) and "embeddings" in data and data["embeddings"]:
-                return data["embeddings"][0]
-        attempts.append(("/api/embed", r.status_code, r.text[:300]))
-    except Exception as e:
-        attempts.append(("/api/embed", "error", str(e)[:300]))
+    if not base_url:
+        attempts.append(("OLLAMA_URL", "empty", "OLLAMA_URL is empty"))
+    else:
 
-    try:
-        r = requests.post(
-            f"{base_url}/api/embeddings",
-            json={"model": EMBED_MODEL, "prompt": text},
-            timeout=120,
-        )
-        if r.ok:
-            data = r.json()
-            if isinstance(data, dict) and "embedding" in data:
-                return data["embedding"]
-        attempts.append(("/api/embeddings", r.status_code, r.text[:300]))
-    except Exception as e:
-        attempts.append(("/api/embeddings", "error", str(e)[:300]))
+        try:
+            r = requests.post(
+                f"{base_url}/api/embed",
+                json={"model": EMBED_MODEL, "input": text},
+                timeout=120,
+            )
+            if r.ok:
+                data = r.json()
+                if isinstance(data, dict) and "embeddings" in data and data["embeddings"]:
+                    return data["embeddings"][0]
+            attempts.append(("/api/embed", r.status_code, r.text[:300]))
+        except Exception as e:
+            attempts.append(("/api/embed", "error", str(e)[:300]))
 
-    try:
-        r = requests.post(
-            f"{base_url}/v1/embeddings",
-            json={"model": EMBED_MODEL, "input": text},
-            timeout=120,
-        )
-        if r.ok:
-            data = r.json()
-            if (
-                isinstance(data, dict)
-                and isinstance(data.get("data"), list)
-                and data["data"]
-                and isinstance(data["data"][0], dict)
-                and "embedding" in data["data"][0]
-            ):
-                return data["data"][0]["embedding"]
-        attempts.append(("/v1/embeddings", r.status_code, r.text[:300]))
-    except Exception as e:
-        attempts.append(("/v1/embeddings", "error", str(e)[:300]))
+        try:
+            r = requests.post(
+                f"{base_url}/api/embeddings",
+                json={"model": EMBED_MODEL, "prompt": text},
+                timeout=120,
+            )
+            if r.ok:
+                data = r.json()
+                if isinstance(data, dict) and "embedding" in data:
+                    return data["embedding"]
+            attempts.append(("/api/embeddings", r.status_code, r.text[:300]))
+        except Exception as e:
+            attempts.append(("/api/embeddings", "error", str(e)[:300]))
+
+        try:
+            r = requests.post(
+                f"{base_url}/v1/embeddings",
+                json={"model": EMBED_MODEL, "input": text},
+                timeout=120,
+            )
+            if r.ok:
+                data = r.json()
+                if (
+                    isinstance(data, dict)
+                    and isinstance(data.get("data"), list)
+                    and data["data"]
+                    and isinstance(data["data"][0], dict)
+                    and "embedding" in data["data"][0]
+                ):
+                    return data["data"][0]["embedding"]
+            attempts.append(("/v1/embeddings", r.status_code, r.text[:300]))
+        except Exception as e:
+            attempts.append(("/v1/embeddings", "error", str(e)[:300]))
+
+    if _ST_MODEL is not None:
+        try:
+            vec = _ST_MODEL.encode([text], normalize_embeddings=False)
+            return vec[0].tolist()
+        except Exception as e:
+            attempts.append(("all-MiniLM-L6-v2", "error", str(e)[:300]))
 
     detail = "\n".join([f"- {p}: {code} {msg}" for p, code, msg in attempts])
     raise RuntimeError(

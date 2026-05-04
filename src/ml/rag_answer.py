@@ -1,8 +1,11 @@
+import hashlib
 import json
 import os
-from typing import Iterator, List
+from typing import Iterator, List, Optional
 
 import requests
+
+import re
 
 from src.ml.mcp_client import search_local_docs, search_web
 from src.ml.model_config import get_model_config
@@ -13,9 +16,70 @@ CHAT_MODEL = MODEL_CONFIG["chat_model"]
 FALLBACK_CHAT_MODEL = MODEL_CONFIG["fallback_chat_model"]
 LOCAL_TOP_K = int(os.getenv("LOCAL_TOP_K", "3"))
 WEB_TOP_K = int(os.getenv("WEB_TOP_K", "2"))
+CHAT_TIMEOUT_S = int(os.getenv("OLLAMA_CHAT_TIMEOUT", "10"))
+
+STYLE_HINTS = [
+    "Keep the tone warm and encouraging.",
+    "Use a calm, grounding tone with gentle questions.",
+    "Keep the response concise and practical.",
+    "Use a supportive tone with a small actionable step.",
+    "Use empathetic wording and avoid repeating the same opening.",
+]
+
+WEB_QUERY_RE = re.compile(
+    r"\b(web|internet|online|duckduckgo|search|browse|site|source|sources|reference|references|cite|citations|link|links|latest|recent|today|news|update|updated|current)\b",
+    re.IGNORECASE,
+)
 
 
-def _build_prompt(question: str, kb_hits: List[str], local_chunks, web_results):
+def _should_use_web_search(question: str) -> bool:
+    if not question:
+        return False
+    # Always allow web search for general knowledge queries.
+    return True
+
+
+def _build_embedding_fallback(question: str, kb_hits, local_chunks, web_results, web_used: bool):
+    if kb_hits:
+        answer = kb_hits[0]
+        summary = ""
+        sources = []
+    elif local_chunks:
+        top = local_chunks[0]
+        answer = f"Based on the closest local match, here is the most relevant excerpt:\n\n{top.get('chunk', '')}"
+        summary = ""
+        sources = [top.get("source", "")] if top.get("source") else []
+    elif web_used and web_results:
+        top = web_results[0]
+        answer = (
+            "I could not reach the local model, so I am sharing the top web match:\n\n"
+            f"{top.get('title', '')}\n{top.get('snippet', '')}\n{top.get('url', '')}"
+        )
+        summary = ""
+        sources = [top.get("url", "")] if top.get("url") else []
+    else:
+        answer = (
+            "I could not reach the local model right now, and I do not have a strong match to return. "
+            "Please try again in a moment."
+        )
+        summary = ""
+        sources = []
+
+    return {
+        "answer": answer,
+        "summary": summary,
+        "web_highlights": [x.get("snippet", "") for x in (web_results or [])[:2] if x.get("snippet")],
+        "sources": [s for s in sources if s],
+    }
+
+
+def _build_prompt(
+    question: str,
+    kb_hits: List[str],
+    local_chunks,
+    web_results,
+    fallback_hint: Optional[str] = None,
+):
     kb_context = "\n\n".join([f"[KB {i+1}] {hit}" for i, hit in enumerate(kb_hits)])
 
     local_context = "\n\n".join(
@@ -26,25 +90,31 @@ def _build_prompt(question: str, kb_hits: List[str], local_chunks, web_results):
         [f"[WEB {i+1}] {x['title']}\n{x['snippet']}\n{x['url']}" for i, x in enumerate(web_results)]
     )
 
-    prompt = f"""
+    style_hint = ""
+    if question:
+        style_hint = STYLE_HINTS[int(hashlib.md5(question.encode("utf-8")).hexdigest(), 16) % len(STYLE_HINTS)]
+
+        prompt = f"""
 You are a helpful assistant for a mental health chat demo.
 
 Return VALID JSON only with this schema:
 {{
-  "answer": "main answer in friendly chat style",
-  "summary": "short 2-3 line summary",
-  "web_highlights": ["short bullet 1", "short bullet 2"],
-  "used_sources": ["source names or URLs"]
+    "answer": "natural, complete reply in friendly chat style",
+    "summary": "short 1-2 line summary",
+    "web_highlights": ["short factual bullet 1", "short factual bullet 2"],
+    "used_sources": ["source names or URLs"]
 }}
 
 Rules:
-- Use the KB context first for safety guidance and grounding.
-- Use local context for grounded recommendations.
-- Use web context for freshness if needed.
+- Write a natural, realistic answer like ChatGPT would.
+- If local and web context exist, synthesize them into one coherent answer.
+- Use KB context only when it clearly applies (safety and grounding).
+- Avoid generic filler or therapy prompts unless the user asked about feelings.
+- Use the fallback guidance to keep continuity with the previous flow.
+- {style_hint}
 - If the answer is weak or uncertain, say that clearly.
 - Do not add markdown fences.
-- Write `answer` in warm, natural conversational style.
-- Keep `summary` to 1-2 concise lines.
+- Keep `summary` concise (1-2 lines).
 - Keep `web_highlights` short and factual.
 - Include only real sources you used in `used_sources`.
 
@@ -59,6 +129,9 @@ Local context:
 
 Web context:
 {web_context if web_context else "No web results found."}
+
+Fallback guidance:
+{fallback_hint if fallback_hint else "No fallback guidance provided."}
 """.strip()
 
     return prompt
@@ -117,7 +190,7 @@ def _parse_chat_content(content: str):
     }
 
 
-def _request_chat_with_model(model_name: str, messages, prompt):
+def _request_chat_with_model(model_name: str, messages, prompt, timeout_s: int):
     payload = {
         "model": model_name,
         "messages": messages,
@@ -131,13 +204,17 @@ def _request_chat_with_model(model_name: str, messages, prompt):
     content = None
 
     try:
-        r = requests.post(f"{base_url}/api/chat", json=payload, timeout=300)
+        r = requests.post(
+            f"{base_url}/api/chat",
+            json=payload,
+            timeout=(timeout_s, timeout_s),
+        )
         if r.ok:
             data = r.json()
             if isinstance(data, dict) and isinstance(data.get("message"), dict):
                 content = data["message"].get("content", "")
-        if content is None:
-            attempts.append(("/api/chat", r.status_code, r.text[:300]))
+        if not content:
+            attempts.append(("/api/chat", r.status_code, "empty response"))
     except Exception as e:
         attempts.append(("/api/chat", "error", str(e)[:300]))
 
@@ -148,7 +225,11 @@ def _request_chat_with_model(model_name: str, messages, prompt):
                 "messages": messages,
                 "stream": False,
             }
-            r = requests.post(f"{base_url}/v1/chat/completions", json=v1_payload, timeout=300)
+            r = requests.post(
+                f"{base_url}/v1/chat/completions",
+                json=v1_payload,
+                timeout=(timeout_s, timeout_s),
+            )
             if r.ok:
                 data = r.json()
                 choices = data.get("choices", []) if isinstance(data, dict) else []
@@ -156,8 +237,8 @@ def _request_chat_with_model(model_name: str, messages, prompt):
                     msg = choices[0].get("message", {})
                     if isinstance(msg, dict):
                         content = msg.get("content", "")
-            if content is None:
-                attempts.append(("/v1/chat/completions", r.status_code, r.text[:300]))
+            if not content:
+                attempts.append(("/v1/chat/completions", r.status_code, "empty response"))
         except Exception as e:
             attempts.append(("/v1/chat/completions", "error", str(e)[:300]))
 
@@ -169,17 +250,21 @@ def _request_chat_with_model(model_name: str, messages, prompt):
                 "stream": False,
                 "keep_alive": "10m",
             }
-            r = requests.post(f"{base_url}/api/generate", json=generate_payload, timeout=300)
+            r = requests.post(
+                f"{base_url}/api/generate",
+                json=generate_payload,
+                timeout=(timeout_s, timeout_s),
+            )
             if r.ok:
                 data = r.json()
                 if isinstance(data, dict):
                     content = data.get("response", "")
-            if content is None:
-                attempts.append(("/api/generate", r.status_code, r.text[:300]))
+            if not content:
+                attempts.append(("/api/generate", r.status_code, "empty response"))
         except Exception as e:
             attempts.append(("/api/generate", "error", str(e)[:300]))
 
-    if content is None:
+    if not content:
         detail = "\n".join([f"- {p}: {code} {msg}" for p, code, msg in attempts])
         raise RuntimeError(
             f"Failed to get chat completion for model '{model_name}'. "
@@ -189,31 +274,42 @@ def _request_chat_with_model(model_name: str, messages, prompt):
     return content
 
 
-def ask_ollama(question: str, kb_hits: List[str], local_chunks, web_results):
-    prompt = _build_prompt(question, kb_hits, local_chunks, web_results)
+def ask_ollama(
+    question: str,
+    kb_hits: List[str],
+    local_chunks,
+    web_results,
+    fallback_hint: Optional[str] = None,
+):
+    prompt = _build_prompt(question, kb_hits, local_chunks, web_results, fallback_hint)
     messages = _build_messages(prompt)
 
     chat_attempts = []
-    content = None
     models_to_try = [CHAT_MODEL]
     if FALLBACK_CHAT_MODEL and FALLBACK_CHAT_MODEL != CHAT_MODEL:
         models_to_try.append(FALLBACK_CHAT_MODEL)
 
     for model_name in models_to_try:
         try:
-            content = _request_chat_with_model(model_name, messages, prompt)
-            break
+            content = _request_chat_with_model(model_name, messages, prompt, CHAT_TIMEOUT_S)
+            parsed = _parse_chat_content(content)
+            if not str(parsed.get("answer", "")).strip():
+                raise RuntimeError("Empty answer returned by model")
+            return parsed
         except Exception as exc:
             chat_attempts.append(str(exc))
 
-    if content is None:
-        raise RuntimeError("\n\n".join(chat_attempts))
-
-    return _parse_chat_content(content)
+    raise RuntimeError("\n\n".join(chat_attempts))
 
 
-def _stream_ollama_json(question: str, kb_hits: List[str], local_chunks, web_results) -> Iterator[str]:
-    prompt = _build_prompt(question, kb_hits, local_chunks, web_results)
+def _stream_ollama_json(
+    question: str,
+    kb_hits: List[str],
+    local_chunks,
+    web_results,
+    fallback_hint: Optional[str] = None,
+) -> Iterator[str]:
+    prompt = _build_prompt(question, kb_hits, local_chunks, web_results, fallback_hint)
     messages = _build_messages(prompt)
     base_url = (OLLAMA_URL or "").rstrip("/")
 
@@ -233,7 +329,12 @@ def _stream_ollama_json(question: str, kb_hits: List[str], local_chunks, web_res
         }
 
         try:
-            with requests.post(f"{base_url}/api/chat", json=payload, timeout=300, stream=True) as r:
+            with requests.post(
+                f"{base_url}/api/chat",
+                json=payload,
+                timeout=(CHAT_TIMEOUT_S, CHAT_TIMEOUT_S),
+                stream=True,
+            ) as r:
                 r.raise_for_status()
                 saw_content = False
                 for raw_line in r.iter_lines(decode_unicode=True):
@@ -256,30 +357,24 @@ def _stream_ollama_json(question: str, kb_hits: List[str], local_chunks, web_res
     raise RuntimeError("\n".join(errors))
 
 
-def chat(question: str, kb_hits: List[str]):
+def chat(question: str, kb_hits: List[str], fallback_hint: Optional[str] = None):
     local_chunks = search_local_docs(question, top_k=LOCAL_TOP_K)
-    web_results = search_web(question, max_results=WEB_TOP_K)
+    web_used = _should_use_web_search(question)
+    web_results = search_web(question, max_results=WEB_TOP_K) if web_used else []
 
     try:
-        result = ask_ollama(question, kb_hits, local_chunks, web_results)
+        result = ask_ollama(question, kb_hits, local_chunks, web_results, fallback_hint)
     except Exception as e:
-        if kb_hits:
+        if fallback_hint:
             result = {
-                "answer": kb_hits[0],
+                "answer": fallback_hint,
                 "summary": "",
                 "web_highlights": [],
                 "sources": [],
             }
         else:
-            result = {
-                "answer": (
-                    "I could not reach the local model server right now. "
-                    "Please check Ollama and model availability, then try again."
-                ),
-                "summary": str(e),
-                "web_highlights": [],
-                "sources": [],
-            }
+            result = _build_embedding_fallback(question, kb_hits, local_chunks, web_results, web_used)
+            result["summary"] = str(e)
 
     if not result.get("sources"):
         result["sources"] = [x.get("source", "") for x in local_chunks if x.get("source")] + [
@@ -291,13 +386,14 @@ def chat(question: str, kb_hits: List[str]):
     return result
 
 
-def chat_stream(question: str, kb_hits: List[str]):
+def chat_stream(question: str, kb_hits: List[str], fallback_hint: Optional[str] = None):
     local_chunks = search_local_docs(question, top_k=LOCAL_TOP_K)
-    web_results = search_web(question, max_results=WEB_TOP_K)
+    web_used = _should_use_web_search(question)
+    web_results = search_web(question, max_results=WEB_TOP_K) if web_used else []
 
     collected = []
     try:
-        for token in _stream_ollama_json(question, kb_hits, local_chunks, web_results):
+        for token in _stream_ollama_json(question, kb_hits, local_chunks, web_results, fallback_hint):
             collected.append(token)
             yield {"type": "token", "value": token}
 
@@ -309,7 +405,7 @@ def chat_stream(question: str, kb_hits: List[str]):
         yield {"type": "final", "data": parsed}
     except Exception as e:
         try:
-            result = ask_ollama(question, kb_hits, local_chunks, web_results)
+            result = ask_ollama(question, kb_hits, local_chunks, web_results, fallback_hint)
             if result.get("answer"):
                 yield {"type": "token", "value": result["answer"]}
             if not result.get("sources"):
@@ -318,25 +414,17 @@ def chat_stream(question: str, kb_hits: List[str]):
                 ]
             yield {"type": "final", "data": result}
         except Exception:
-            if kb_hits:
+            if fallback_hint:
                 fallback = {
-                    "answer": kb_hits[0],
+                    "answer": fallback_hint,
                     "summary": "",
                     "web_highlights": [],
                     "sources": [],
                 }
-                yield {"type": "token", "value": kb_hits[0]}
+                yield {"type": "token", "value": fallback_hint}
                 yield {"type": "final", "data": fallback}
             else:
-                fallback = {
-                    "answer": (
-                        "I could not reach the local model server right now. "
-                        "Please check Ollama and model availability, then try again."
-                    ),
-                    "summary": str(e),
-                    "web_highlights": [],
-                    "sources": [x.get("source", "") for x in local_chunks if x.get("source")] + [
-                        x.get("url", "") for x in web_results if x.get("url")
-                    ],
-                }
+                fallback = _build_embedding_fallback(question, kb_hits, local_chunks, web_results, web_used)
+                fallback["summary"] = str(e)
+                yield {"type": "token", "value": fallback["answer"]}
                 yield {"type": "final", "data": fallback}

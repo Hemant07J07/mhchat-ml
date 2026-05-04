@@ -1,11 +1,18 @@
 import asyncio
 import concurrent.futures
+import importlib
 import json
 import os
 import sys
 from pathlib import Path
 
-from dotenv import load_dotenv
+_dotenv_spec = importlib.util.find_spec("dotenv")
+if _dotenv_spec:
+    _dotenv = importlib.import_module("dotenv")
+    load_dotenv = getattr(_dotenv, "load_dotenv", lambda: None)
+else:
+    def load_dotenv():
+        return None
 
 load_dotenv()
 
