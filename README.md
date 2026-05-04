@@ -1,3 +1,8 @@
+---
+title: mhchat-ml
+sdk: docker
+app_port: 7860
+---
 
 # mhchat-ml
 
@@ -9,6 +14,14 @@ Minimal ML + API package for a mental-health chat prototype:
 - **FastAPI** endpoint `POST /predict` that returns intent + crisis flag + KB hits.
 - **RAG chat** endpoint `POST /chat` that can use Ollama, local docs, and web search.
 - **Streaming RAG** endpoint `POST /chat/stream` that emits JSONL events.
+
+## High-level flow
+
+1) Safety keywords are checked first.
+2) Intent classification runs to decide whether to retrieve KB docs.
+3) Local retrieval (embeddings) and web search gather context.
+4) Ollama generates a structured JSON response combining local + web.
+5) If Ollama is unavailable, a synthesized fallback is returned.
 
 ## Repo Layout
 
@@ -26,6 +39,7 @@ Minimal ML + API package for a mental-health chat prototype:
 	- `retrieve_kb.py`: query the KB index
 	- `rag_answer.py`: Ollama-powered RAG answers (with streaming helper)
 	- `rag_retrieval.py`: local + web retrieval helpers
+	- `mcp_client.py`: optional MCP tool wrapper with local fallback
 	- `expand_dataset.py`: generate synthetic intent examples
 	- `oversample_intent.py`: oversample crisis class in the dataset
 - `src/models/`
@@ -159,8 +173,8 @@ and MCP tool integration. Configure via environment variables:
 OLLAMA_URL=http://localhost:11434
 OLLAMA_CHAT_MODEL=llama3.2:1b
 OLLAMA_EMBED_MODEL=embeddinggemma
-OLLAMA_FALLBACK_CHAT_MODEL=gemma3
-MODEL_PROFILE=GEMMA4_2B
+OLLAMA_FALLBACK_CHAT_MODEL=llama3.2:1b
+MODEL_PROFILE=LLAMA3_1B
 
 # Retrieval
 RAG_DATA_DIR=data
@@ -172,6 +186,20 @@ WEB_TOP_K=2
 MCP_ENABLED=false
 MCP_SERVER_PATH=mcp_server.py
 ```
+
+## Deployment (Hugging Face Docker Space)
+
+This repo is ready for a Docker Space. The container listens on port 7860.
+
+1) Create a new Space, choose Docker.
+2) Push this repo to the Space.
+3) The Space will build using the Dockerfile and run:
+
+```bash
+uvicorn src.api.main:app --host 0.0.0.0 --port 7860
+```
+
+Your live URL will look like: https://<your-space>.hf.space
 
 ## RAG endpoints
 
